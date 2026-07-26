@@ -95,3 +95,28 @@ DATABASE_PATH=/home/你的用户名/.local/share/weave/weave.db
 ```bash
 systemctl --user restart weave
 ```
+
+## GitHub 无法直连时
+
+如果服务器无法稳定访问 GitHub，可以在服务器创建一个裸 Git 部署仓库，再由开发机
+通过 SSH 增量推送。GitHub 仍然保留为公开源码仓库。
+
+服务器初始化一次：
+
+```bash
+mkdir -p ~/repos
+git init --bare --initial-branch=main ~/repos/weave-self-hosted.git
+```
+
+Windows 开发机初始化一次（替换用户名和服务器）：
+
+```bash
+git remote add deploy ssh://用户名@服务器/home/用户名/repos/weave-self-hosted.git
+git push deploy main
+```
+
+之后每次提交完可一条命令完成发布：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy/publish.ps1 -Server 用户名@服务器
+```
