@@ -7,7 +7,6 @@ cd "$APP_DIR"
 git pull --ff-only
 npm ci
 npm run build
-npm prune --omit=dev
 systemctl --user restart weave
 
 for _ in {1..20}; do

@@ -29,7 +29,6 @@ sed \
 cd "$APP_DIR"
 npm ci
 npm run build
-npm prune --omit=dev
 
 systemctl --user daemon-reload
 systemctl --user enable --now weave
