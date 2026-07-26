@@ -1,0 +1,30 @@
+{
+  "name": "weave-self-hosted",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB -c blue,magenta \"node --watch server/index.mjs\" \"vite --host 0.0.0.0 --port 3001\"",
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "test": "npm run build && node --test tests/server.test.mjs"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.2",
+    "fastify": "^5.10.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "concurrently": "^10.0.4",
+    "typescript": "5.9.3",
+    "vite": "8.0.13"
+  },
+  "type": "module",
+  "description": "Self-hosted visual knowledge base"
+}

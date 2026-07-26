@@ -1,0 +1,40 @@
+# Dependencies and generated output
+/node_modules/
+/.npm-cache/
+/dist/
+/coverage/
+
+# Runtime data and local configuration
+/data/
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+
+# Local logs
+*.log
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.pem
+
+# Superseded starter files kept locally until the first release is verified
+/.openai/
+/.wrangler/
+/.next/
+/.vinext/
+/app/
+/build/
+/db/
+/drizzle/
+/examples/
+/worker/
+/outputs/
+/work/
+/drizzle.config.ts
+/eslint.config.mjs
+/next.config.ts
+/tests/rendered-html.test.mjs
