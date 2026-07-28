@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, type CSSProperties, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 export type DocMode = "edit" | "preview" | "mindmap";
 
@@ -121,19 +121,157 @@ function buildMindMap(title: string, content: string): MindNode {
   return root;
 }
 
-function MindBranch({ node, root = false }: { node: MindNode; root?: boolean }) {
-  return <li>
-    <div className={root ? "mind-node root" : "mind-node"}>{node.text}</div>
-    {!!node.children.length && <ul>{node.children.map(child => <MindBranch key={child.id} node={child} />)}</ul>}
-  </li>;
+type PositionedMindNode = MindNode & {
+  color: string;
+  depth: number;
+  height: number;
+  parentId?: string;
+  width: number;
+  x: number;
+  y: number;
+};
+
+type MindLink = {
+  color: string;
+  depth: number;
+  from: PositionedMindNode;
+  to: PositionedMindNode;
+};
+
+type MindLayout = {
+  height: number;
+  links: MindLink[];
+  nodes: PositionedMindNode[];
+  width: number;
+};
+
+const branchColors = ["#7961c8", "#d86f68", "#d49235", "#459475", "#4686b9", "#ad6299"];
+
+function mindNodeSize(text: string, depth: number, full: boolean) {
+  const fontWidth = full ? 8.2 : 7.2;
+  const padding = full ? 28 : 22;
+  const limits = depth === 0
+    ? (full ? [142, 214] : [118, 184])
+    : depth === 1
+      ? (full ? [116, 190] : [98, 166])
+      : (full ? [96, 164] : [80, 142]);
+  return {
+    width: Math.round(Math.max(limits[0], Math.min(limits[1], Array.from(text).length * fontWidth + padding))),
+    height: depth === 0 ? (full ? 48 : 42) : depth === 1 ? (full ? 40 : 35) : (full ? 34 : 30),
+  };
+}
+
+function layoutMindMap(root: MindNode, full: boolean): MindLayout {
+  const records: Omit<PositionedMindNode, "x" | "y">[] = [];
+  const branchDepth = root.children.length === 1 && root.children[0].children.length ? 2 : 1;
+  const collect = (node: MindNode, depth: number, color: string, parentId?: string) => {
+    const size = mindNodeSize(node.text, depth, full);
+    records.push({ ...node, ...size, color, depth, parentId });
+    node.children.forEach((child, index) => {
+      const childColor = depth + 1 === branchDepth ? branchColors[index % branchColors.length] : color;
+      collect(child, depth + 1, childColor, node.id);
+    });
+  };
+  collect(root, 0, "#544065");
+
+  const maxWidths: number[] = [];
+  records.forEach(node => { maxWidths[node.depth] = Math.max(maxWidths[node.depth] || 0, node.width); });
+  const columnX: number[] = [full ? 28 : 18];
+  for (let depth = 1; depth < maxWidths.length; depth += 1) {
+    columnX[depth] = columnX[depth - 1] + maxWidths[depth - 1] + (full ? 76 : 60);
+  }
+
+  const byId = new Map(records.map(node => [node.id, node]));
+  const positioned = new Map<string, PositionedMindNode>();
+  let cursorY = full ? 26 : 16;
+  const place = (node: Omit<PositionedMindNode, "x" | "y">): PositionedMindNode => {
+    const children = node.children.map(child => place(byId.get(child.id)!));
+    let y: number;
+    if (children.length) {
+      const first = children[0];
+      const last = children[children.length - 1];
+      y = (first.y + first.height / 2 + last.y + last.height / 2) / 2 - node.height / 2;
+    } else {
+      y = cursorY;
+      cursorY += node.height + (node.depth <= 1 ? (full ? 28 : 20) : (full ? 18 : 13));
+    }
+    const result: PositionedMindNode = { ...node, x: columnX[node.depth], y };
+    positioned.set(node.id, result);
+    return result;
+  };
+  place(records[0]);
+
+  const nodes = records.map(node => positioned.get(node.id)!);
+  const links = nodes.flatMap(node => {
+    if (!node.parentId) return [];
+    return [{ color: node.color, depth: node.depth, from: positioned.get(node.parentId)!, to: node }];
+  });
+  const width = Math.max(...nodes.map(node => node.x + node.width)) + (full ? 34 : 20);
+  const height = Math.max(cursorY, ...nodes.map(node => node.y + node.height)) + (full ? 24 : 16);
+  return { height, links, nodes, width };
+}
+
+function linkPath(link: MindLink) {
+  const startX = link.from.x + link.from.width;
+  const startY = link.from.y + link.from.height / 2;
+  const endX = link.to.x;
+  const endY = link.to.y + link.to.height / 2;
+  const bend = Math.max(24, (endX - startX) * .52);
+  return `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`;
 }
 
 export function MindMap({ title, content, full = false }: { title: string; content: string; full?: boolean }) {
-  const root = buildMindMap(title, content);
-  return <div className={"doc-surface mindmap-view " + (full ? "full" : "")} onWheel={event => event.stopPropagation()}>
-    <div className="mindmap-scroll">
-      <ul className="mindmap-tree"><MindBranch node={root} root /></ul>
-      {!root.children.length && <div className="mindmap-empty">使用 #、##、### 标题或缩进列表生成导图分支。</div>}
+  const root = useMemo(() => buildMindMap(title, content), [title, content]);
+  const layout = useMemo(() => layoutMindMap(root, full), [root, full]);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useLayoutEffect(() => {
+    if (full) { setScale(1); return; }
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const fit = () => {
+      const availableWidth = Math.max(180, viewport.clientWidth - 16);
+      setScale(Math.max(.64, Math.min(1, availableWidth / layout.width)));
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [full, layout.width]);
+
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    const rootNode = layout.nodes[0];
+    if (!scroll || !rootNode) return;
+    scroll.scrollTop = Math.max(0, (rootNode.y + rootNode.height / 2) * scale - scroll.clientHeight / 2);
+    scroll.scrollLeft = 0;
+  }, [layout, scale]);
+
+  return <div ref={viewportRef} className={"doc-surface mindmap-view " + (full ? "full" : "")} onWheel={event => event.stopPropagation()}>
+    <div ref={scrollRef} className="mindmap-scroll">
+      <div className="mindmap-frame" style={{ width: layout.width * scale, height: layout.height * scale }}>
+        <div className="mindmap-canvas" style={{ width: layout.width, height: layout.height, transform: `scale(${scale})` }}>
+          <svg className="mindmap-links" viewBox={`0 0 ${layout.width} ${layout.height}`} aria-hidden="true">
+            {layout.links.map(link => <path key={link.to.id} d={linkPath(link)} style={{ stroke: link.color }} className={link.depth === 1 ? "primary" : ""} />)}
+          </svg>
+          {layout.nodes.map(node => <div
+            key={node.id}
+            className={`mind-node depth-${Math.min(node.depth, 3)} ${node.depth === 0 ? "root" : ""}`}
+            style={{
+              "--branch-color": node.color,
+              "--branch-wash": `${node.color}18`,
+              height: node.height,
+              left: node.x,
+              top: node.y,
+              width: node.width,
+            } as CSSProperties}
+            title={node.text}
+          >{node.text}</div>)}
+          {!root.children.length && <div className="mindmap-empty" style={{ left: layout.nodes[0].x, top: layout.nodes[0].y + layout.nodes[0].height + 14 }}>使用 #、##、### 标题或缩进列表生成导图分支。</div>}
+        </div>
+      </div>
     </div>
   </div>;
 }
