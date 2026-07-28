@@ -1,7 +1,9 @@
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { createWorkspaceStore } from "./workspace-store.mjs";
 
 const host = process.env.HOST ?? "127.0.0.1";
@@ -11,6 +13,13 @@ const databasePath = resolve(
   process.env.DATABASE_PATH ?? resolve(dataDirectory, "weave.db"),
 );
 const clientDirectory = resolve("dist/client");
+const assetDirectory = resolve(dataDirectory, "assets");
+const imageTypes = new Map([
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/gif", ".gif"],
+  ["image/webp", ".webp"],
+]);
 
 const app = Fastify({
   logger: true,
@@ -59,7 +68,31 @@ app.put("/api/workspace", async (request, reply) => {
   return result.value;
 });
 
+app.post("/api/assets", async (request, reply) => {
+  const { data, name, type } = request.body ?? {};
+  const extension = imageTypes.get(type);
+  if (!extension || typeof data !== "string") {
+    return reply.code(400).send({ message: "只支持 JPG、PNG、GIF 和 WebP 图片" });
+  }
+  const buffer = Buffer.from(data, "base64");
+  if (!buffer.length || buffer.length > 8 * 1024 * 1024) {
+    return reply.code(400).send({ message: "图片不能为空且不能超过 8 MB" });
+  }
+  await mkdir(assetDirectory, { recursive: true });
+  const filename = `${randomUUID()}${extension}`;
+  await writeFile(resolve(assetDirectory, filename), buffer);
+  return { name: typeof name === "string" ? name : filename, url: `/assets/${filename}` };
+});
+
 if (existsSync(clientDirectory)) {
+  await mkdir(assetDirectory, { recursive: true });
+  await app.register(fastifyStatic, {
+    root: assetDirectory,
+    prefix: "/assets/",
+    decorateReply: false,
+    cacheControl: true,
+    maxAge: "30d",
+  });
   await app.register(fastifyStatic, {
     root: clientDirectory,
     prefix: "/",

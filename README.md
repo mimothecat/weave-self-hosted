@@ -47,7 +47,8 @@ bash deploy/install.sh
 ```
 
 安装脚本会构建前端、创建并启动 `weave.service`。运行数据放在
-`~/.local/share/weave/weave.db`，不会跟着代码更新被覆盖。
+`~/.local/share/weave/weave.db`，插入的图片放在 `~/.local/share/weave/assets/`。
+两者都在源码目录之外，不会跟着代码更新被覆盖。
 
 ## 增量更新
 

@@ -1,16 +1,18 @@
-import { ChangeEvent, DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DocModeTabs, MarkdownView, MindMap, type DocMode } from "./Markdown";
+import { ChangeEvent, ClipboardEvent as ReactClipboardEvent, DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CardViewButton, DocModeButton, HistoryControl, MindStyleButton, type CardView, type HistoryItem } from "./Controls";
+import { MarkdownView, MindMap, type DocMode, type MindMapStyle } from "./Markdown";
 
 type Kind = "block" | "doc";
 type Color = "paper" | "lavender" | "mint" | "sun" | "rose" | "sky";
-type Card = { id:string; kind:Kind; title:string; content:string; color:Color; createdAt:number; updatedAt:number };
+type Card = { id:string; kind:Kind; title:string; content:string; color:Color; createdAt:number; updatedAt:number; docMode?:DocMode; mindMapStyle?:MindMapStyle };
 type Board = { id:string; title:string; createdAt:number };
-type Place = { id:string; boardId:string; cardId:string; x:number; y:number; w:number; h:number; compact:boolean };
+type Place = { id:string; boardId:string; cardId:string; x:number; y:number; w:number; h:number; compact:boolean; view?:CardView };
 type Link = { id:string; from:string; to:string; label:string };
 type Data = { version:1; boards:Board[]; cards:Card[]; places:Place[]; links:Link[]; activeBoardId:string; updatedAt:number };
 type Move = null | { mode:"pan"; cx:number; cy:number; x:number; y:number } | { mode:"card"; cx:number; cy:number; origins:Record<string,{x:number;y:number}> } | { mode:"resize"; cx:number; cy:number; id:string; w:number; h:number };
 type TouchPoint = { x:number; y:number };
 type Pinch = null | { distance:number; zoom:number; worldX:number; worldY:number };
+type HistoryEntry = HistoryItem & { data:Data; mergeKey?:string };
 
 const colors:Color[]=["paper","lavender","mint","sun","rose","sky"];
 const id=(p:string)=>`${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
@@ -18,6 +20,8 @@ const clone=(d:Data)=>JSON.parse(JSON.stringify(d)) as Data;
 const label=(c:Card)=>c.title.trim()||c.content.trim().split(/\r?\n/)[0]?.slice(0,46)||"无标题卡片";
 const privacyLabel=(c:Card)=>c.title.trim()||(c.kind==="doc"?"无标题文档":"无标题 Block");
 const privacyHeight=48;
+const titleHeight=76;
+const cardView=(place:Place):CardView=>place.view??(place.compact?"content":"full");
 
 function seed():Data{
   const t=Date.now();
@@ -49,6 +53,19 @@ async function saveToServer(workspace:Data,baseRevision:number):Promise<Workspac
   return result;
 }
 
+
+async function uploadImage(file:File):Promise<{name:string;url:string}>{
+  if(!file.type.startsWith("image/"))throw new Error("请选择图片文件");
+  if(file.size>8*1024*1024)throw new Error("图片不能超过 8 MB");
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  let binary="";
+  for(let offset=0;offset<bytes.length;offset+=32768)binary+=String.fromCharCode(...bytes.subarray(offset,offset+32768));
+  const response=await fetch("/api/assets",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:file.name,type:file.type,data:btoa(binary)})});
+  const result=await response.json();
+  if(!response.ok)throw new Error(result?.message||"图片上传失败");
+  return result;
+}
+
 export default function App(){
   const [data,setData]=useState<Data|null>(null);
   const [selected,setSelected]=useState<string[]>([]);
@@ -65,9 +82,10 @@ export default function App(){
   const [ready,setReady]=useState(false);
   const [privacy,setPrivacy]=useState(()=>{try{return localStorage.getItem("weave-privacy-mode")==="1"}catch{return false}});
   const [revealed,setRevealed]=useState<string[]>([]);
-  const [docModes,setDocModes]=useState<Record<string,DocMode>>({});
-  const canvas=useRef<HTMLDivElement>(null), importer=useRef<HTMLInputElement>(null), search=useRef<HTMLInputElement>(null);
-  const moving=useRef<Move>(null), undoStack=useRef<Data[]>([]), redoStack=useRef<Data[]>([]), timer=useRef<ReturnType<typeof setTimeout>|null>(null);
+  const canvas=useRef<HTMLDivElement>(null), importer=useRef<HTMLInputElement>(null), imageInput=useRef<HTMLInputElement>(null), search=useRef<HTMLInputElement>(null);
+  const imageTarget=useRef<string|null>(null), dataRef=useRef<Data|null>(null);
+  dataRef.current=data;
+  const moving=useRef<Move>(null), undoStack=useRef<HistoryEntry[]>([]), redoStack=useRef<HistoryEntry[]>([]), timer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const revision=useRef(0),skipFirstSave=useRef(true),saveQueue=useRef<Promise<void>>(Promise.resolve());
   const touches=useRef(new Map<number,TouchPoint>()),pinch=useRef<Pinch>(null),view=useRef({pan,zoom});
   view.current={pan,zoom};
@@ -76,9 +94,15 @@ export default function App(){
   useEffect(()=>{if(!data||!ready)return;if(skipFirstSave.current){skipFirstSave.current=false;return}setStatus("saving");if(timer.current)clearTimeout(timer.current);timer.current=setTimeout(()=>{const snapshot={...data,updatedAt:Date.now()};saveQueue.current=saveQueue.current.catch(()=>undefined).then(async()=>{const saved=await saveToServer(snapshot,revision.current);revision.current=saved.revision;setStatus("saved")}).catch(error=>{setStatus("error");setToast(error instanceof Error?error.message:"保存到服务器失败")})},350);return()=>{if(timer.current)clearTimeout(timer.current)}},[data,ready]);
   useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(""),2200);return()=>clearTimeout(t)},[toast]);
   useEffect(()=>{try{localStorage.setItem("weave-privacy-mode",privacy?"1":"0")}catch{}},[privacy]);
-  const commit=useCallback((fn:(d:Data)=>void)=>setData(cur=>{if(!cur)return cur;undoStack.current.push(clone(cur));if(undoStack.current.length>60)undoStack.current.shift();redoStack.current=[];const n=clone(cur);fn(n);n.updatedAt=Date.now();return n}),[]);
-  const undo=useCallback(()=>setData(cur=>{if(!cur||!undoStack.current.length)return cur;redoStack.current.push(clone(cur));return undoStack.current.pop()!}),[]);
-  const redo=useCallback(()=>setData(cur=>{if(!cur||!redoStack.current.length)return cur;undoStack.current.push(clone(cur));return redoStack.current.pop()!}),[]);
+  const recordHistory=useCallback((snapshot:Data,label:string,mergeKey?:string)=>{
+    const now=Date.now(),last=undoStack.current.at(-1);
+    if(mergeKey&&last?.mergeKey===mergeKey&&now-last.at<1200)last.at=now;
+    else{undoStack.current.push({data:clone(snapshot),label,at:now,mergeKey});if(undoStack.current.length>80)undoStack.current.shift()}
+    redoStack.current=[];
+  },[]);
+  const commit=useCallback((fn:(d:Data)=>void,label="编辑工作区",mergeKey?:string)=>{const cur=dataRef.current;if(!cur)return;recordHistory(cur,label,mergeKey);const next=clone(cur);fn(next);next.updatedAt=Date.now();dataRef.current=next;setData(next)},[recordHistory]);
+  const undo=useCallback((count=1)=>{const cur=dataRef.current;if(!cur||!undoStack.current.length)return;let next=clone(cur);for(let index=0;index<count&&undoStack.current.length;index+=1){const entry=undoStack.current.pop()!;redoStack.current.push({data:clone(next),label:entry.label,at:Date.now()});next=entry.data}dataRef.current=next;setData(next)},[]);
+  const redo=useCallback((count=1)=>{const cur=dataRef.current;if(!cur||!redoStack.current.length)return;let next=clone(cur);for(let index=0;index<count&&redoStack.current.length;index+=1){const entry=redoStack.current.pop()!;undoStack.current.push({data:clone(next),label:entry.label,at:Date.now()});next=entry.data}dataRef.current=next;setData(next)},[]);
 
   const board=useMemo(()=>data?.boards.find(b=>b.id===data.activeBoardId),[data]);
   const places=useMemo(()=>data?.places.filter(p=>p.boardId===data.activeBoardId)??[],[data]);
@@ -88,24 +112,24 @@ export default function App(){
   const chosenPlace=selected.length===1?data?.places.find(p=>p.id===selected[0]):undefined;
   const chosen=chosenPlace?data?.cards.find(c=>c.id===chosenPlace.cardId):undefined;
   const isVeiled=(p:Place)=>privacy&&!revealed.includes(p.id);
-  const displayHeight=(p:Place)=>isVeiled(p)?privacyHeight:p.h;
+  const displayHeight=(p:Place)=>isVeiled(p)?privacyHeight:cardView(p)==="title"?titleHeight:p.h;
   const linked=useCallback((cardId:string)=>{if(!data)return[];const ids=new Set<string>();data.links.forEach(l=>{if(l.from===cardId)ids.add(l.to);if(l.to===cardId)ids.add(l.from)});const c=data.cards.find(x=>x.id===cardId);data.cards.forEach(x=>{if(c?.title&&(x.content.includes(`[[${c.title}]]`)||x.content.includes(`@${c.title}`)))ids.add(x.id);if(x.title&&(c?.content.includes(`[[${x.title}]]`)||c?.content.includes(`@${x.title}`)))ids.add(x.id)});return data.cards.filter(x=>ids.has(x.id))},[data]);
   const world=useCallback((cx:number,cy:number)=>{const r=canvas.current?.getBoundingClientRect();return r?{x:(cx-r.left-pan.x)/zoom,y:(cy-r.top-pan.y)/zoom}:{x:400,y:250}},[pan,zoom]);
   const center=useCallback(()=>{const r=canvas.current?.getBoundingClientRect();return r?{x:(r.width/2-pan.x)/zoom,y:(r.height/2-pan.y)/zoom}:{x:400,y:250}},[pan,zoom]);
 
-  const addCard=useCallback((kind:Kind,point?:{x:number;y:number})=>{if(!data)return;const at=point??center(),cardId=id("card"),placeId=id("place"),now=Date.now();commit(d=>{d.cards.push({id:cardId,kind,title:kind==="doc"?"无标题文档":"",content:"",color:kind==="doc"?"paper":"sun",createdAt:now,updatedAt:now});d.places.push({id:placeId,boardId:d.activeBoardId,cardId,x:at.x-(kind==="doc"?160:125),y:at.y-75,w:kind==="doc"?320:250,h:kind==="doc"?240:150,compact:kind==="block"})});setSelected([placeId])},[center,commit,data]);
-  const placeCard=useCallback((cardId:string,point?:{x:number;y:number})=>{if(!data)return;const old=data.places.find(p=>p.boardId===data.activeBoardId&&p.cardId===cardId);if(old){setSelected([old.id]);setToast("这张卡片已经在当前白板");return}const c=data.cards.find(x=>x.id===cardId);if(!c)return;const at=point??center(),pid=id("place");commit(d=>d.places.push({id:pid,boardId:d.activeBoardId,cardId,x:at.x-150,y:at.y-80,w:c.kind==="doc"?320:250,h:c.kind==="doc"?230:150,compact:c.kind==="block"}));setSelected([pid])},[center,commit,data]);
-  const newBoard=()=>{const bid=id("board");commit(d=>{d.boards.push({id:bid,title:"新白板",createdAt:Date.now()});d.activeBoardId=bid});setSelected([]);setRevealed([]);setPan({x:0,y:0});setZoom(1)};
-  const switchBoard=(bid:string)=>{commit(d=>{d.activeBoardId=bid});setSelected([]);setRevealed([]);setConnect(false);setLinkFrom(null);setPan({x:0,y:0});setZoom(1)};
-  const removeSelected=useCallback(()=>{if(!selected.length)return;commit(d=>{d.places=d.places.filter(p=>!selected.includes(p.id))});setSelected([]);setToast("已从白板移除，卡片仍在资料库")},[commit,selected]);
-  const updateCard=(cid:string,patch:Partial<Card>)=>setData(d=>d?{...d,cards:d.cards.map(c=>c.id===cid?{...c,...patch,updatedAt:Date.now()}:c)}:d);
-  const updatePlace=(pid:string,patch:Partial<Place>)=>commit(d=>{const p=d.places.find(x=>x.id===pid);if(p)Object.assign(p,patch)});
-  const toggleKind=(c:Card,p:Place)=>commit(d=>{const dc=d.cards.find(x=>x.id===c.id),dp=d.places.find(x=>x.id===p.id);if(!dc||!dp)return;dc.kind=dc.kind==="doc"?"block":"doc";if(dc.kind==="doc"&&!dc.title)dc.title=dc.content.split(/\r?\n/)[0]?.slice(0,40)||"无标题文档";dp.compact=dc.kind==="block";dp.w=dc.kind==="doc"?320:250;dp.h=dc.kind==="doc"?230:150});
+  const addCard=useCallback((kind:Kind,point?:{x:number;y:number})=>{if(!data)return;const at=point??center(),cardId=id("card"),placeId=id("place"),now=Date.now();commit(d=>{d.cards.push({id:cardId,kind,title:kind==="doc"?"无标题文档":"",content:"",color:kind==="doc"?"paper":"sun",createdAt:now,updatedAt:now});d.places.push({id:placeId,boardId:d.activeBoardId,cardId,x:at.x-(kind==="doc"?160:125),y:at.y-75,w:kind==="doc"?320:250,h:kind==="doc"?240:150,compact:kind==="block",view:kind==="doc"?"full":"content"})},kind==="doc"?"新建文档":"新建 Block");setSelected([placeId])},[center,commit,data]);
+  const placeCard=useCallback((cardId:string,point?:{x:number;y:number})=>{if(!data)return;const old=data.places.find(p=>p.boardId===data.activeBoardId&&p.cardId===cardId);if(old){setSelected([old.id]);setToast("这张卡片已经在当前白板");return}const c=data.cards.find(x=>x.id===cardId);if(!c)return;const at=point??center(),pid=id("place");commit(d=>d.places.push({id:pid,boardId:d.activeBoardId,cardId,x:at.x-150,y:at.y-80,w:c.kind==="doc"?320:250,h:c.kind==="doc"?230:150,compact:c.kind==="block",view:c.kind==="doc"?"full":"content"}),"放入白板");setSelected([pid])},[center,commit,data]);
+  const newBoard=()=>{const bid=id("board");commit(d=>{d.boards.push({id:bid,title:"新白板",createdAt:Date.now()});d.activeBoardId=bid},"新建白板");setSelected([]);setRevealed([]);setPan({x:0,y:0});setZoom(1)};
+  const switchBoard=(bid:string)=>{commit(d=>{d.activeBoardId=bid},"切换白板");setSelected([]);setRevealed([]);setConnect(false);setLinkFrom(null);setPan({x:0,y:0});setZoom(1)};
+  const removeSelected=useCallback(()=>{if(!selected.length)return;commit(d=>{d.places=d.places.filter(p=>!selected.includes(p.id))},"从白板移除");setSelected([]);setToast("已从白板移除，卡片仍在资料库")},[commit,selected]);
+  const updateCard=useCallback((cid:string,patch:Partial<Card>,historyLabel="编辑卡片",mergeKey?:string)=>commit(d=>{const card=d.cards.find(c=>c.id===cid);if(card)Object.assign(card,patch,{updatedAt:Date.now()})},historyLabel,mergeKey),[commit]);
+  const updatePlace=(pid:string,patch:Partial<Place>,historyLabel="调整卡片显示")=>commit(d=>{const p=d.places.find(x=>x.id===pid);if(p)Object.assign(p,patch)},historyLabel);
+  const toggleKind=(c:Card,p:Place)=>commit(d=>{const dc=d.cards.find(x=>x.id===c.id),dp=d.places.find(x=>x.id===p.id);if(!dc||!dp)return;dc.kind=dc.kind==="doc"?"block":"doc";if(dc.kind==="doc"&&!dc.title)dc.title=dc.content.split(/\r?\n/)[0]?.slice(0,40)||"无标题文档";dp.compact=dc.kind==="block";dp.w=dc.kind==="doc"?320:250;dp.h=dc.kind==="doc"?230:150;dp.view=dc.kind==="doc"?"full":"content"},"切换卡片类型");
 
-  const choose=(p:Place,e:ReactPointerEvent)=>{if(connect){if(!linkFrom){setLinkFrom(p.cardId);setToast("请选择第二张卡片");return}if(linkFrom===p.cardId){setLinkFrom(null);return}const exists=data!.links.some(l=>(l.from===linkFrom&&l.to===p.cardId)||(l.to===linkFrom&&l.from===p.cardId));if(!exists)commit(d=>d.links.push({id:id("link"),from:linkFrom,to:p.cardId,label:""}));setConnect(false);setLinkFrom(null);setToast(exists?"两张卡片已经有关联":"已建立双向知识链接");return}setSelected(cur=>e.shiftKey?(cur.includes(p.id)?cur.filter(x=>x!==p.id):[...cur,p.id]):[p.id])};
-  const startCard=(e:ReactPointerEvent,p:Place)=>{if(connect||e.button!==0||!data)return;e.preventDefault();e.stopPropagation();const ids=selected.includes(p.id)?selected:[p.id],origins:Record<string,{x:number;y:number}>={};data.places.forEach(x=>{if(ids.includes(x.id))origins[x.id]={x:x.x,y:x.y}});if(!selected.includes(p.id))setSelected([p.id]);undoStack.current.push(clone(data));redoStack.current=[];moving.current={mode:"card",cx:e.clientX,cy:e.clientY,origins}};
-  const startResize=(e:ReactPointerEvent,p:Place)=>{if(!data)return;e.preventDefault();e.stopPropagation();undoStack.current.push(clone(data));redoStack.current=[];moving.current={mode:"resize",cx:e.clientX,cy:e.clientY,id:p.id,w:p.w,h:p.h}};
-  const trackTouchStart=(e:ReactPointerEvent<HTMLDivElement>)=>{const target=e.target as HTMLElement;if(e.pointerType!=="touch"||target.closest(".zoom,.doc-surface,.doc-modes"))return;if(!target.closest("button,input,textarea"))e.currentTarget.setPointerCapture(e.pointerId);touches.current.set(e.pointerId,{x:e.clientX,y:e.clientY});if(touches.current.size!==2)return;const [a,b]=Array.from(touches.current.values()),r=canvas.current?.getBoundingClientRect();if(!r)return;const current=view.current,mx=(a.x+b.x)/2-r.left,my=(a.y+b.y)/2-r.top;pinch.current={distance:Math.max(1,Math.hypot(b.x-a.x,b.y-a.y)),zoom:current.zoom,worldX:(mx-current.pan.x)/current.zoom,worldY:(my-current.pan.y)/current.zoom};moving.current=null};
+  const choose=(p:Place,e:ReactPointerEvent)=>{if(connect){if(!linkFrom){setLinkFrom(p.cardId);setToast("请选择第二张卡片");return}if(linkFrom===p.cardId){setLinkFrom(null);return}const exists=data!.links.some(l=>(l.from===linkFrom&&l.to===p.cardId)||(l.to===linkFrom&&l.from===p.cardId));if(!exists)commit(d=>d.links.push({id:id("link"),from:linkFrom,to:p.cardId,label:""}),"建立双向链接");setConnect(false);setLinkFrom(null);setToast(exists?"两张卡片已经有关联":"已建立双向知识链接");return}setSelected(cur=>e.shiftKey?(cur.includes(p.id)?cur.filter(x=>x!==p.id):[...cur,p.id]):[p.id])};
+  const startCard=(e:ReactPointerEvent,p:Place)=>{if(connect||e.button!==0||!data)return;e.preventDefault();e.stopPropagation();const ids=selected.includes(p.id)?selected:[p.id],origins:Record<string,{x:number;y:number}>={};data.places.forEach(x=>{if(ids.includes(x.id))origins[x.id]={x:x.x,y:x.y}});if(!selected.includes(p.id))setSelected([p.id]);recordHistory(data,"移动卡片");moving.current={mode:"card",cx:e.clientX,cy:e.clientY,origins}};
+  const startResize=(e:ReactPointerEvent,p:Place)=>{if(!data)return;e.preventDefault();e.stopPropagation();recordHistory(data,"调整卡片大小");moving.current={mode:"resize",cx:e.clientX,cy:e.clientY,id:p.id,w:p.w,h:p.h}};
+  const trackTouchStart=(e:ReactPointerEvent<HTMLDivElement>)=>{const target=e.target as HTMLElement;if(e.pointerType!=="touch"||target.closest(".zoom,.doc-surface,.status-select,.history-control"))return;if(!target.closest("button,input,textarea"))e.currentTarget.setPointerCapture(e.pointerId);touches.current.set(e.pointerId,{x:e.clientX,y:e.clientY});if(touches.current.size!==2)return;const [a,b]=Array.from(touches.current.values()),r=canvas.current?.getBoundingClientRect();if(!r)return;const current=view.current,mx=(a.x+b.x)/2-r.left,my=(a.y+b.y)/2-r.top;pinch.current={distance:Math.max(1,Math.hypot(b.x-a.x,b.y-a.y)),zoom:current.zoom,worldX:(mx-current.pan.x)/current.zoom,worldY:(my-current.pan.y)/current.zoom};moving.current=null};
   const startPan=(e:ReactPointerEvent<HTMLDivElement>)=>{if(e.target!==e.currentTarget||e.button>1||(e.pointerType==="touch"&&touches.current.size>1))return;setSelected([]);moving.current={mode:"pan",cx:e.clientX,cy:e.clientY,x:pan.x,y:pan.y}};
   useEffect(()=>{const move=(e:PointerEvent)=>{if(e.pointerType==="touch"&&touches.current.has(e.pointerId)){touches.current.set(e.pointerId,{x:e.clientX,y:e.clientY});const gesture=pinch.current;if(gesture&&touches.current.size>=2){const [a,b]=Array.from(touches.current.values()),r=canvas.current?.getBoundingClientRect();if(!r)return;const nz=Math.min(1.8,Math.max(.35,gesture.zoom*Math.hypot(b.x-a.x,b.y-a.y)/gesture.distance)),mx=(a.x+b.x)/2-r.left,my=(a.y+b.y)/2-r.top,nextPan={x:mx-gesture.worldX*nz,y:my-gesture.worldY*nz};view.current={zoom:nz,pan:nextPan};setZoom(nz);setPan(nextPan);e.preventDefault();return}}const m=moving.current;if(!m)return;if(m.mode==="pan"){const nextPan={x:m.x+e.clientX-m.cx,y:m.y+e.clientY-m.cy};view.current={...view.current,pan:nextPan};setPan(nextPan)}else if(m.mode==="card"){const dx=(e.clientX-m.cx)/zoom,dy=(e.clientY-m.cy)/zoom;setData(d=>d?{...d,places:d.places.map(p=>m.origins[p.id]?{...p,x:m.origins[p.id].x+dx,y:m.origins[p.id].y+dy}:p)}:d)}else{const dx=(e.clientX-m.cx)/zoom,dy=(e.clientY-m.cy)/zoom;setData(d=>d?{...d,places:d.places.map(p=>p.id===m.id?{...p,w:Math.max(210,m.w+dx),h:Math.max(116,m.h+dy)}:p)}:d)}};const up=(e:PointerEvent)=>{if(e.pointerType==="touch"&&touches.current.has(e.pointerId)){touches.current.delete(e.pointerId);pinch.current=null;const remaining=Array.from(touches.current.values())[0];moving.current=remaining?{mode:"pan",cx:remaining.x,cy:remaining.y,x:view.current.pan.x,y:view.current.pan.y}:null;return}moving.current=null};window.addEventListener("pointermove",move,{passive:false});window.addEventListener("pointerup",up);window.addEventListener("pointercancel",up);return()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",up)}},[zoom]);
   const wheel=(e:React.WheelEvent)=>{if(!e.ctrlKey&&!e.metaKey){setPan(v=>({x:v.x-e.deltaX,y:v.y-e.deltaY}));return}e.preventDefault();const r=canvas.current?.getBoundingClientRect();if(!r)return;const mx=e.clientX-r.left,my=e.clientY-r.top,nz=Math.min(1.8,Math.max(.35,zoom*(e.deltaY>0?.9:1.1))),wx=(mx-pan.x)/zoom,wy=(my-pan.y)/zoom;setZoom(nz);setPan({x:mx-wx*nz,y:my-wy*nz})};
@@ -113,15 +137,31 @@ export default function App(){
   useEffect(()=>{const key=(e:KeyboardEvent)=>{const el=e.target as HTMLElement,editing=el.tagName==="INPUT"||el.tagName==="TEXTAREA"||el.isContentEditable;if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();search.current?.focus()}else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){e.preventDefault();e.shiftKey?redo():undo()}else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="y"){e.preventDefault();redo()}else if(!editing){if(e.key==="Delete"||e.key==="Backspace")removeSelected();if(e.key.toLowerCase()==="n")addCard("block");if(e.key==="Escape"){setConnect(false);setLinkFrom(null);setFull(null)}}};window.addEventListener("keydown",key);return()=>window.removeEventListener("keydown",key)},[addCard,redo,removeSelected,undo]);
   const fit=()=>{if(!places.length||!canvas.current){setPan({x:0,y:0});setZoom(1);return}const b=places.reduce((a,p)=>({x1:Math.min(a.x1,p.x),y1:Math.min(a.y1,p.y),x2:Math.max(a.x2,p.x+p.w),y2:Math.max(a.y2,p.y+displayHeight(p))}),{x1:Infinity,y1:Infinity,x2:-Infinity,y2:-Infinity}),r=canvas.current.getBoundingClientRect(),z=Math.min(1,Math.max(.35,Math.min((r.width-120)/(b.x2-b.x1),(r.height-120)/(b.y2-b.y1))));setZoom(z);setPan({x:r.width/2-(b.x1+b.x2)/2*z,y:r.height/2-(b.y1+b.y2)/2*z})};
   const backup=()=>{if(!data)return;const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})),a=document.createElement("a");a.href=url;a.download=`weave-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);setToast("完整备份已导出")};
-  const restore=async(e:ChangeEvent<HTMLInputElement>)=>{const f=e.target.files?.[0];e.target.value="";if(!f)return;try{const v=JSON.parse(await f.text());if(!valid(v))throw 0;if(!v.boards.some((b:Board)=>b.id===v.activeBoardId))v.activeBoardId=v.boards[0]?.id??"";if(data)undoStack.current.push(clone(data));setData(v);setSelected([]);setToast("备份恢复成功")}catch{setToast("备份文件格式不正确")}};
-  const deleteCard=(cid:string)=>{const c=data?.cards.find(x=>x.id===cid);if(!c||!confirm(`确定彻底删除「${privacy?privacyLabel(c):label(c)}」？`))return;commit(d=>{d.cards=d.cards.filter(x=>x.id!==cid);d.places=d.places.filter(x=>x.cardId!==cid);d.links=d.links.filter(x=>x.from!==cid&&x.to!==cid)});setSelected([])};
+  const restore=async(e:ChangeEvent<HTMLInputElement>)=>{const f=e.target.files?.[0];e.target.value="";if(!f)return;try{const v=JSON.parse(await f.text());if(!valid(v))throw 0;if(!v.boards.some((b:Board)=>b.id===v.activeBoardId))v.activeBoardId=v.boards[0]?.id??"";if(data)recordHistory(data,"恢复备份");dataRef.current=v;setData(v);setSelected([]);setToast("备份恢复成功")}catch{setToast("备份文件格式不正确")}};
+  const insertImage=useCallback(async(cid:string,file:File)=>{
+    try{
+      setToast("正在上传图片…");
+      const asset=await uploadImage(file);
+      commit(d=>{const card=d.cards.find(c=>c.id===cid);if(!card)return;const prefix=card.content.trimEnd();card.content=`${prefix}${prefix?"\n\n":""}![${asset.name}](${asset.url})\n`;card.updatedAt=Date.now()},"插入图片");
+      setToast("图片已插入文档");
+    }catch(error){setToast(error instanceof Error?error.message:"图片上传失败")}
+  },[commit]);
+  const requestImage=(cid:string)=>{imageTarget.current=cid;imageInput.current?.click()};
+  const pickImage=(e:ChangeEvent<HTMLInputElement>)=>{const file=e.target.files?.[0],cid=imageTarget.current;e.target.value="";if(file&&cid)void insertImage(cid,file)};
+  const pasteImage=(cid:string,e:ReactClipboardEvent<HTMLTextAreaElement>)=>{const file=Array.from(e.clipboardData.files).find(item=>item.type.startsWith("image/"));if(file){e.preventDefault();void insertImage(cid,file)}};
+  const dropImage=(cid:string,e:DragEvent<HTMLTextAreaElement>)=>{const file=Array.from(e.dataTransfer.files).find(item=>item.type.startsWith("image/"));if(file){e.preventDefault();void insertImage(cid,file)}};
+  const deleteCard=(cid:string)=>{const c=data?.cards.find(x=>x.id===cid);if(!c||!confirm(`确定彻底删除「${privacy?privacyLabel(c):label(c)}」？`))return;commit(d=>{d.cards=d.cards.filter(x=>x.id!==cid);d.places=d.places.filter(x=>x.cardId!==cid);d.links=d.links.filter(x=>x.from!==cid&&x.to!==cid)},"彻底删除卡片");setSelected([])};
   const togglePrivacy=()=>setPrivacy(current=>{const next=!current;setRevealed([]);if(next){setFull(null);setSelected([])}setToast(next?"隐私模式：正文已隐藏":"已显示全部内容");return next});
-  const setDocMode=(cardId:string,mode:DocMode)=>setDocModes(current=>({...current,[cardId]:mode}));
 
   if(!data)return <main className="loading"><b>W</b><span>{status==="error"?"无法连接 Weave 服务器":"正在从服务器加载知识库…"}</span></main>;
   const fullCard=data.cards.find(c=>c.id===full);
-  const fullMode:DocMode=fullCard?(docModes[fullCard.id]??"edit"):"edit";
+  const fullMode:DocMode=fullCard?(fullCard.docMode??"edit"):"edit";
+  const fullStyle:MindMapStyle=fullCard?.mindMapStyle??"rainbow";
+  const chosenView:CardView=chosenPlace?cardView(chosenPlace):"full";
+  const undoEntries=[...undoStack.current].reverse();
+  const redoEntries=[...redoStack.current].reverse();
   return <main className={`app ${privacy?"privacy-mode":""}`}>
+    <input ref={imageInput} hidden type="file" accept="image/jpeg,image/png,image/gif,image/webp" onChange={pickImage}/>
     <aside className={`left ${leftOpen?"":"closed"}`}>
       <header className="brand"><b>W</b><div><strong>Weave</strong><small>自托管视觉知识库</small></div><button onClick={()=>setLeftOpen(false)}>‹</button></header>
       <div className="left-body">
@@ -134,19 +174,71 @@ export default function App(){
     </aside>
     {!leftOpen&&<button className="open-left" onClick={()=>setLeftOpen(true)}>W</button>}
     <section className="work">
-      <header className="top"><div><span>白板 /</span><input value={board?.title??""} onChange={e=>setData(d=>d?{...d,boards:d.boards.map(b=>b.id===d.activeBoardId?{...b,title:e.target.value}:b)}:d)}/></div><nav><button onClick={undo}>↶</button><button onClick={redo}>↷</button><i/><button className={`privacy-toggle ${privacy?"active":""}`} aria-pressed={privacy} aria-label={privacy?"显示全部内容":"进入隐私模式"} title={privacy?"显示全部内容":"进入隐私模式"} onClick={togglePrivacy}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/>{!privacy&&<path className="eye-slash" d="m4 4 16 16"/>}</svg></button><button className={connect?"connect active":"connect"} onClick={()=>{setConnect(v=>!v);setLinkFrom(null)}}>⌁ {connect?(linkFrom?"选择第二张":"选择起点"):"连线"}</button><button className="new-doc" onClick={()=>addCard("doc")}>＋ 新建 Doc</button><button onClick={()=>setRightOpen(v=>!v)}>ⓘ</button></nav></header>
+      <header className="top"><div><span>白板 /</span><input value={board?.title??""} onChange={e=>commit(d=>{const active=d.boards.find(b=>b.id===d.activeBoardId);if(active)active.title=e.target.value},"编辑白板标题",`board:${data.activeBoardId}:title`)}/></div><nav><HistoryControl direction="undo" entries={undoEntries} onStep={undo}/><HistoryControl direction="redo" entries={redoEntries} onStep={redo}/><i/><button className={`privacy-toggle ${privacy?"active":""}`} aria-pressed={privacy} aria-label={privacy?"显示全部内容":"进入隐私模式"} title={privacy?"显示全部内容":"进入隐私模式"} onClick={togglePrivacy}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/>{!privacy&&<path className="eye-slash" d="m4 4 16 16"/>}</svg></button><button className={connect?"connect active":"connect"} onClick={()=>{setConnect(v=>!v);setLinkFrom(null)}}>⌁ {connect?(linkFrom?"选择第二张":"选择起点"):"连线"}</button><button className="new-doc" onClick={()=>addCard("doc")}>＋ 新建 Doc</button><button onClick={()=>setRightOpen(v=>!v)}>ⓘ</button></nav></header>
       <div ref={canvas} className={connect?"canvas connecting":"canvas"} onPointerDownCapture={trackTouchStart} onPointerDown={startPan} onDoubleClick={e=>{if(e.target===e.currentTarget)addCard("block",world(e.clientX,e.clientY))}} onWheel={wheel} onDragOver={e=>{if(e.dataTransfer.types.includes("application/x-weave")){e.preventDefault();e.dataTransfer.dropEffect="copy"}}} onDrop={(e:DragEvent<HTMLDivElement>)=>{e.preventDefault();const cid=e.dataTransfer.getData("application/x-weave");if(cid)placeCard(cid,world(e.clientX,e.clientY))}}>
         <div className="grid" style={{backgroundPosition:`${pan.x}px ${pan.y}px`,backgroundSize:`${24*zoom}px ${24*zoom}px`}}/>
         {!places.length&&<div className="empty-canvas"><b>✦</b><strong>这是一个空白思考空间</strong><p>双击任意位置创建 Block，或从资料库拖入已有卡片。</p><button onClick={()=>addCard("block")}>创建第一个想法</button></div>}
         <div className="stage" style={{transform:`translate(${pan.x}px,${pan.y}px) scale(${zoom})`}}>
           <svg className="wires"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z"/></marker></defs>{links.map(l=>{const a=placeByCard.get(l.from)!,b=placeByCard.get(l.to)!,ah=displayHeight(a),bh=displayHeight(b),x1=a.x+a.w/2,y1=a.y+ah/2,x2=b.x+b.w/2,y2=b.y+bh/2,k=Math.max(40,Math.abs(x2-x1)*.38),path=`M ${x1} ${y1} C ${x1+k} ${y1}, ${x2-k} ${y2}, ${x2} ${y2}`;return <g key={l.id}><path className="wire" d={path} markerEnd="url(#arrow)"/>{l.label&&<text x={(x1+x2)/2} y={(y1+y2)/2-9}>{l.label}</text>}</g>})}</svg>
-          {places.map(p=>{const c=data.cards.find(x=>x.id===p.cardId);if(!c)return null;const isSelected=selected.includes(p.id),source=linkFrom===c.id,related=linked(c.id),hidden=isVeiled(p),mode:DocMode=docModes[c.id]??"edit";return <article key={p.id} className={`card ${c.kind} ${c.color} ${p.compact?"compact":"full"} ${isSelected?"selected":""} ${source?"source":""} ${hidden?"veiled":""}`} style={{left:p.x,top:p.y,width:p.w,height:hidden?privacyHeight:p.h}} onPointerDown={e=>choose(p,e)}>{hidden?<button className="privacy-cover" onPointerDown={e=>e.stopPropagation()} onClick={()=>setRevealed(current=>[...current,p.id])} aria-label={`查看${privacyLabel(c)}的内容`}><strong>{privacyLabel(c)}</strong><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/></svg></button>:<><header onPointerDown={e=>startCard(e,p)}><span>⠿</span><small>{c.kind.toUpperCase()}</small><nav>{related.length>0&&<em>⌁ {related.length}</em>}<button onPointerDown={e=>e.stopPropagation()} onClick={()=>toggleKind(c,p)}>{c.kind==="doc"?"▣":"▤"}</button>{c.kind==="doc"&&<button onPointerDown={e=>e.stopPropagation()} onClick={()=>setFull(c.id)}>↗</button>}<button onPointerDown={e=>e.stopPropagation()} onClick={()=>{commit(d=>{d.places=d.places.filter(x=>x.id!==p.id)});setSelected([]);setToast("已移除，资料库中仍保留")}}>×</button></nav></header>{c.kind==="doc"&&!p.compact&&<input className="card-title" value={c.title} onPointerDown={e=>e.stopPropagation()} onChange={e=>updateCard(c.id,{title:e.target.value})} placeholder="无标题文档"/>}{c.kind==="doc"&&<DocModeTabs mode={mode} onChange={next=>setDocMode(c.id,next)}/>} {c.kind==="doc"&&mode==="preview"?<MarkdownView content={c.content}/>:c.kind==="doc"&&mode==="mindmap"?<MindMap title={c.title} content={c.content}/>:<textarea className={p.compact?"compact-text":"card-text"} value={c.content} onPointerDown={e=>e.stopPropagation()} onChange={e=>updateCard(c.id,{content:e.target.value})} placeholder={c.kind==="doc"?"# 一级标题\n## 二级标题\n### 三级标题\n\n开始写作…":"写下一个想法…"}/>}<i className="resize" onPointerDown={e=>startResize(e,p)}/></>}</article>})}
+          {places.map(p=>{
+            const c=data.cards.find(x=>x.id===p.cardId);
+            if(!c)return null;
+            const isSelected=selected.includes(p.id),source=linkFrom===c.id,related=linked(c.id),hidden=isVeiled(p);
+            const mode:DocMode=c.docMode??"edit",viewMode=cardView(p),mapStyle:MindMapStyle=c.mindMapStyle??"rainbow";
+            return <article key={p.id} className={`card ${c.kind} ${c.color} view-${viewMode} ${isSelected?"selected":""} ${source?"source":""} ${hidden?"veiled":""}`} style={{left:p.x,top:p.y,width:p.w,height:hidden?privacyHeight:viewMode==="title"?titleHeight:p.h}} onPointerDown={e=>choose(p,e)}>
+              {hidden?<button className="privacy-cover" onPointerDown={e=>e.stopPropagation()} onClick={()=>setRevealed(current=>[...current,p.id])} aria-label={`查看${privacyLabel(c)}的内容`}><strong>{privacyLabel(c)}</strong><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/></svg></button>:<>
+                <header onPointerDown={e=>startCard(e,p)}>
+                  <span>⠿</span><small>{c.kind.toUpperCase()}</small>
+                  <nav>
+                    {related.length>0&&<em>⌁ {related.length}</em>}
+                    {c.kind==="doc"&&<DocModeButton value={mode} onChange={next=>updateCard(c.id,{docMode:next},"切换文档模式")}/>}
+                    <CardViewButton value={viewMode} onChange={next=>updatePlace(p.id,{view:next,compact:next==="content"},"切换卡片显示")}/>
+                    {c.kind==="doc"&&mode==="mindmap"&&<MindStyleButton value={mapStyle} onChange={next=>updateCard(c.id,{mindMapStyle:next},"切换导图样式")}/>}
+                    {c.kind==="doc"&&<button className="image-insert" title="插入图片" aria-label="插入图片" onPointerDown={e=>e.stopPropagation()} onClick={()=>requestImage(c.id)}>▧</button>}
+                    {c.kind==="doc"&&<button title="全屏打开" aria-label="全屏打开" onPointerDown={e=>e.stopPropagation()} onClick={()=>setFull(c.id)}>↗</button>}
+                    <button title="从白板移除" aria-label="从白板移除" onPointerDown={e=>e.stopPropagation()} onClick={()=>{commit(d=>{d.places=d.places.filter(x=>x.id!==p.id)},"从白板移除");setSelected([]);setToast("已移除，资料库中仍保留")}}>×</button>
+                  </nav>
+                </header>
+                {viewMode==="title"
+                  ?<div className="card-title-only">{c.kind==="doc"?privacyLabel(c):label(c)}</div>
+                  :<>
+                    {c.kind==="doc"&&viewMode==="full"&&<input className="card-title" value={c.title} onPointerDown={e=>e.stopPropagation()} onChange={e=>updateCard(c.id,{title:e.target.value},"编辑文档标题",`card:${c.id}:title`)} placeholder="无标题文档"/>}
+                    {c.kind==="doc"&&mode==="preview"
+                      ?<MarkdownView content={c.content}/>
+                      :c.kind==="doc"&&mode==="mindmap"
+                        ?<MindMap title={c.title} content={c.content} style={mapStyle} onChange={next=>updateCard(c.id,{content:next},"编辑导图")} onTitleChange={next=>updateCard(c.id,{title:next},"重命名中心主题")}/>
+                        :<textarea className={viewMode==="content"?"compact-text":"card-text"} value={c.content} onPointerDown={e=>e.stopPropagation()} onChange={e=>updateCard(c.id,{content:e.target.value},c.kind==="doc"?"编辑文档正文":"编辑 Block",`card:${c.id}:content`)} onPaste={c.kind==="doc"?e=>pasteImage(c.id,e):undefined} onDragOver={c.kind==="doc"?e=>{if(Array.from(e.dataTransfer.types).includes("Files"))e.preventDefault()}:undefined} onDrop={c.kind==="doc"?e=>dropImage(c.id,e):undefined} placeholder={c.kind==="doc"?"# 一级标题\n## 二级标题\n### 三级标题\n\n开始写作…":"写下一个想法…"}/>}
+                    <i className="resize" onPointerDown={e=>startResize(e,p)}/>
+                  </>}
+              </>}
+            </article>
+          })}
+
         </div>
         <div className="zoom"><button onClick={()=>setZoom(v=>Math.max(.35,v-.1))}>−</button><button onClick={()=>setZoom(1)}>{Math.round(zoom*100)}%</button><button onClick={()=>setZoom(v=>Math.min(1.8,v+.1))}>＋</button><i/><button onClick={fit}>⛶</button></div><div className="hint">双击创建 · 拖动空白平移 · 双指或 Ctrl + 滚轮缩放</div>
       </div>
     </section>
-    {rightOpen&&<aside className="right"><header><div><small>详情</small><strong>{chosen?(privacy?privacyLabel(chosen):label(chosen)):"当前白板"}</strong></div><button onClick={()=>setRightOpen(false)}>×</button></header>{!chosen||!chosenPlace?<div className="right-empty"><b>◇</b><strong>{board?.title}</strong><span>{places.length} 张卡片 · {links.length} 条可见连接</span><hr/><p>选择一张卡片，查看样式、所在白板和双向链接。</p></div>:<div className="details"><section><label>卡片类型</label><div className="segments"><button className={chosen.kind==="block"?"active":""} onClick={()=>{if(chosen.kind!=="block")toggleKind(chosen,chosenPlace)}}>Block</button><button className={chosen.kind==="doc"?"active":""} onClick={()=>{if(chosen.kind!=="doc")toggleKind(chosen,chosenPlace)}}>Doc</button></div></section><section><label>当前白板显示</label><div className="segments"><button className={chosenPlace.compact?"active":""} onClick={()=>updatePlace(chosenPlace.id,{compact:true})}>折叠</button><button className={!chosenPlace.compact?"active":""} onClick={()=>updatePlace(chosenPlace.id,{compact:false})}>展开</button></div></section><section><label>卡片颜色</label><div className="colors">{colors.map(x=><button key={x} className={`${x} ${chosen.color===x?"active":""}`} onClick={()=>updateCard(chosen.id,{color:x})}/>)}</div></section><section><label>双向链接</label><div className="relations">{linked(chosen.id).map(c=>{const p=placeByCard.get(c.id);return <button key={c.id} onClick={()=>p?setSelected([p.id]):placeCard(c.id)}><i className={c.color}/><span>{privacy?privacyLabel(c):label(c)}</span><em>{p?"定位":"放入"}</em></button>})}{!linked(chosen.id).length&&<p>暂无链接。使用顶部「连线」，或在正文输入 [[卡片标题]]。</p>}</div></section><section><label>出现于白板</label><div className="appearances">{data.boards.filter(b=>data.places.some(p=>p.boardId===b.id&&p.cardId===chosen.id)).map(b=><button key={b.id} onClick={()=>switchBoard(b.id)}>◇ {b.title}</button>)}</div></section><footer>最近编辑 {new Intl.DateTimeFormat("zh-CN",{hour:"2-digit",minute:"2-digit"}).format(chosen.updatedAt)}</footer></div>}</aside>}
-    {fullCard&&<div className="modal" onPointerDown={e=>{if(e.target===e.currentTarget)setFull(null)}}><div className={`full-editor ${fullCard.color}`}><header><span>DOC · 服务器自动保存</span><DocModeTabs mode={fullMode} onChange={next=>setDocMode(fullCard.id,next)}/><button onClick={()=>setFull(null)}>完成</button></header><input value={fullCard.title} onChange={e=>updateCard(fullCard.id,{title:e.target.value})} autoFocus/>{fullMode==="edit"?<textarea value={fullCard.content} onChange={e=>updateCard(fullCard.id,{content:e.target.value})} placeholder="# 一级标题\n## 二级标题\n### 三级标题\n\n开始写作…"/>:fullMode==="preview"?<MarkdownView content={fullCard.content} full/>:<MindMap title={fullCard.title} content={fullCard.content} full/>}<footer><span>{fullCard.content.trim().length} 字符</span><span># 标题层级可生成思维导图</span></footer></div></div>}
+    {rightOpen&&<aside className="right"><header><div><small>详情</small><strong>{chosen?(privacy?privacyLabel(chosen):label(chosen)):"当前白板"}</strong></div><button onClick={()=>setRightOpen(false)}>×</button></header>{!chosen||!chosenPlace?<div className="right-empty"><b>◇</b><strong>{board?.title}</strong><span>{places.length} 张卡片 · {links.length} 条可见连接</span><hr/><p>选择一张卡片，查看样式、所在白板和双向链接。</p></div>:<div className="details"><section><label>卡片类型</label><div className="segments"><button className={chosen.kind==="block"?"active":""} onClick={()=>{if(chosen.kind!=="block")toggleKind(chosen,chosenPlace)}}>Block</button><button className={chosen.kind==="doc"?"active":""} onClick={()=>{if(chosen.kind!=="doc")toggleKind(chosen,chosenPlace)}}>Doc</button></div></section><section><label>当前白板显示</label><div className="segments three"><button className={chosenView==="title"?"active":""} onClick={()=>updatePlace(chosenPlace.id,{view:"title",compact:false},"切换纯标题模式")}>标题</button><button className={chosenView==="content"?"active":""} onClick={()=>updatePlace(chosenPlace.id,{view:"content",compact:true},"切换纯内容模式")}>内容</button><button className={chosenView==="full"?"active":""} onClick={()=>updatePlace(chosenPlace.id,{view:"full",compact:false},"切换完整模式")}>完整</button></div></section><section><label>卡片颜色</label><div className="colors">{colors.map(x=><button key={x} className={`${x} ${chosen.color===x?"active":""}`} onClick={()=>updateCard(chosen.id,{color:x})}/>)}</div></section><section><label>双向链接</label><div className="relations">{linked(chosen.id).map(c=>{const p=placeByCard.get(c.id);return <button key={c.id} onClick={()=>p?setSelected([p.id]):placeCard(c.id)}><i className={c.color}/><span>{privacy?privacyLabel(c):label(c)}</span><em>{p?"定位":"放入"}</em></button>})}{!linked(chosen.id).length&&<p>暂无链接。使用顶部「连线」，或在正文输入 [[卡片标题]]。</p>}</div></section><section><label>出现于白板</label><div className="appearances">{data.boards.filter(b=>data.places.some(p=>p.boardId===b.id&&p.cardId===chosen.id)).map(b=><button key={b.id} onClick={()=>switchBoard(b.id)}>◇ {b.title}</button>)}</div></section><footer>最近编辑 {new Intl.DateTimeFormat("zh-CN",{hour:"2-digit",minute:"2-digit"}).format(chosen.updatedAt)}</footer></div>}</aside>}
+    {fullCard&&<div className="modal" onPointerDown={e=>{if(e.target===e.currentTarget)setFull(null)}}>
+      <div className={`full-editor ${fullCard.color}`}>
+        <header>
+          <span>DOC · 服务器自动保存</span>
+          <div className="full-status">
+            <DocModeButton value={fullMode} onChange={next=>updateCard(fullCard.id,{docMode:next},"切换文档模式")}/>
+            {fullMode==="mindmap"&&<MindStyleButton value={fullStyle} onChange={next=>updateCard(fullCard.id,{mindMapStyle:next},"切换导图样式")}/>}
+            <button className="editor-image" title="插入图片" onClick={()=>requestImage(fullCard.id)}>▧ 插入图片</button>
+          </div>
+          <button className="editor-done" onClick={()=>setFull(null)}>完成</button>
+        </header>
+        <input value={fullCard.title} onChange={e=>updateCard(fullCard.id,{title:e.target.value},"编辑文档标题",`card:${fullCard.id}:title`)} autoFocus/>
+        {fullMode==="edit"
+          ?<textarea value={fullCard.content} onChange={e=>updateCard(fullCard.id,{content:e.target.value},"编辑文档正文",`card:${fullCard.id}:content`)} onPaste={e=>pasteImage(fullCard.id,e)} onDragOver={e=>{if(Array.from(e.dataTransfer.types).includes("Files"))e.preventDefault()}} onDrop={e=>dropImage(fullCard.id,e)} placeholder="# 一级标题\n## 二级标题\n### 三级标题\n\n开始写作…"/>
+          :fullMode==="preview"
+            ?<MarkdownView content={fullCard.content} full/>
+            :<MindMap title={fullCard.title} content={fullCard.content} full style={fullStyle} onChange={next=>updateCard(fullCard.id,{content:next},"编辑导图")} onTitleChange={next=>updateCard(fullCard.id,{title:next},"重命名中心主题")}/>}
+        <footer><span>{fullCard.content.trim().length} 字符</span><span>双击导图节点可重命名 · 选中后可增删</span></footer>
+      </div>
+    </div>}
     {toast&&<div className="toast">{toast}</div>}
   </main>
 }
