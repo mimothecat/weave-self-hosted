@@ -1,7 +1,7 @@
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createWorkspaceStore } from "./workspace-store.mjs";
@@ -21,6 +21,17 @@ const imageTypes = new Map([
   ["image/webp", ".webp"],
 ]);
 
+let currentClientScript = null;
+let currentClientStylesheet = null;
+
+if (existsSync(resolve(clientDirectory, "index.html"))) {
+  const clientIndex = await readFile(resolve(clientDirectory, "index.html"), "utf8");
+  currentClientScript =
+    clientIndex.match(/<script[^>]+src="([^"]+\.js)"/)?.[1] ?? null;
+  currentClientStylesheet =
+    clientIndex.match(/<link[^>]+href="([^"]+\.css)"/)?.[1] ?? null;
+}
+
 const app = Fastify({
   logger: true,
   bodyLimit: 25 * 1024 * 1024,
@@ -29,7 +40,12 @@ const app = Fastify({
 const store = createWorkspaceStore(databasePath);
 
 app.addHook("onSend", async (request, reply, payload) => {
-  if (request.url.startsWith("/api/")) {
+  const requestPath = request.url.split("?")[0];
+  if (
+    requestPath.startsWith("/api/") ||
+    requestPath === "/" ||
+    requestPath === "/index.html"
+  ) {
     reply.header("Cache-Control", "no-store");
   }
   return payload;
@@ -99,13 +115,39 @@ if (existsSync(clientDirectory)) {
     cacheControl: true,
     maxAge: "1h",
     immutable: false,
+    setHeaders: (reply, path) => {
+      if (path.endsWith("index.html")) {
+        reply.header("Cache-Control", "no-store");
+      }
+    },
   });
 
   app.setNotFoundHandler((request, reply) => {
     if (request.url.startsWith("/api/")) {
       return reply.code(404).send({ message: "API not found" });
     }
-    return reply.type("text/html").sendFile("index.html");
+    const requestPath = request.url.split("?")[0];
+    if (
+      currentClientScript &&
+      /^\/assets\/index-[^/]+\.js$/.test(requestPath)
+    ) {
+      return reply
+        .header("Cache-Control", "no-store")
+        .redirect(currentClientScript);
+    }
+    if (
+      currentClientStylesheet &&
+      /^\/assets\/index-[^/]+\.css$/.test(requestPath)
+    ) {
+      return reply
+        .header("Cache-Control", "no-store")
+        .redirect(currentClientStylesheet);
+    }
+
+    return reply
+      .header("Cache-Control", "no-store")
+      .type("text/html")
+      .sendFile("index.html");
   });
 }
 

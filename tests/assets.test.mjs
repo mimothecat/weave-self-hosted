@@ -37,6 +37,28 @@ test("image assets are stored outside the workspace database and served back", a
     await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
   }
 
+  const entry = await fetch(`${baseUrl}/`);
+  assert.equal(entry.status, 200);
+  assert.equal(entry.headers.get("cache-control"), "no-store");
+
+  const staleScript = await fetch(`${baseUrl}/assets/index-stale.js`, {
+    redirect: "manual",
+  });
+  assert.equal(staleScript.status, 302);
+  assert.match(
+    staleScript.headers.get("location"),
+    /^\/assets\/index-[^/]+\.js$/,
+  );
+
+  const staleStylesheet = await fetch(`${baseUrl}/assets/index-stale.css`, {
+    redirect: "manual",
+  });
+  assert.equal(staleStylesheet.status, 302);
+  assert.match(
+    staleStylesheet.headers.get("location"),
+    /^\/assets\/index-[^/]+\.css$/,
+  );
+
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
   const upload = await fetch(`${baseUrl}/api/assets`, {
     method: "POST",
