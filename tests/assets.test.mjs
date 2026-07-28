@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
 
-const testDirectory = resolve("data/test-assets");
+const testDirectory = resolve("data", `test-assets-${process.pid}-${Date.now()}`);
 const port = 33219;
 const baseUrl = `http://127.0.0.1:${port}`;
 
@@ -23,7 +24,11 @@ test("image assets are stored outside the workspace database and served back", a
   });
 
   context.after(async () => {
-    child.kill();
+    if (child.exitCode === null) {
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+    }
     await rm(testDirectory, { recursive: true, force: true });
   });
 

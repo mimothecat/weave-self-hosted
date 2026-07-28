@@ -1,10 +1,10 @@
-import { ChangeEvent, ClipboardEvent as ReactClipboardEvent, DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CardViewButton, DocModeButton, HistoryControl, MindStyleButton, type CardView, type HistoryItem } from "./Controls";
-import { MarkdownView, MindMap, type DocMode, type MindMapStyle } from "./Markdown";
+import { ChangeEvent, DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CardViewButton, HistoryControl, type CardView, type HistoryItem } from "./Controls";
+import { documentPlainText, RichDocumentEditor } from "./RichDocument";
 
 type Kind = "block" | "doc";
 type Color = "paper" | "lavender" | "mint" | "sun" | "rose" | "sky";
-type Card = { id:string; kind:Kind; title:string; content:string; color:Color; createdAt:number; updatedAt:number; docMode?:DocMode; mindMapStyle?:MindMapStyle };
+type Card = { id:string; kind:Kind; title:string; content:string; color:Color; createdAt:number; updatedAt:number };
 type Board = { id:string; title:string; createdAt:number };
 type Place = { id:string; boardId:string; cardId:string; x:number; y:number; w:number; h:number; compact:boolean; view?:CardView };
 type Link = { id:string; from:string; to:string; label:string };
@@ -17,7 +17,7 @@ type HistoryEntry = HistoryItem & { data:Data; mergeKey?:string };
 const colors:Color[]=["paper","lavender","mint","sun","rose","sky"];
 const id=(p:string)=>`${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
 const clone=(d:Data)=>JSON.parse(JSON.stringify(d)) as Data;
-const label=(c:Card)=>c.title.trim()||c.content.trim().split(/\r?\n/)[0]?.slice(0,46)||"无标题卡片";
+const label=(c:Card)=>c.title.trim()||documentPlainText(c.content).slice(0,46)||"无标题卡片";
 const privacyLabel=(c:Card)=>c.title.trim()||(c.kind==="doc"?"无标题文档":"无标题 Block");
 const privacyHeight=48;
 const titleHeight=76;
@@ -82,8 +82,8 @@ export default function App(){
   const [ready,setReady]=useState(false);
   const [privacy,setPrivacy]=useState(()=>{try{return localStorage.getItem("weave-privacy-mode")==="1"}catch{return false}});
   const [revealed,setRevealed]=useState<string[]>([]);
-  const canvas=useRef<HTMLDivElement>(null), importer=useRef<HTMLInputElement>(null), imageInput=useRef<HTMLInputElement>(null), search=useRef<HTMLInputElement>(null);
-  const imageTarget=useRef<string|null>(null), dataRef=useRef<Data|null>(null);
+  const canvas=useRef<HTMLDivElement>(null), importer=useRef<HTMLInputElement>(null), search=useRef<HTMLInputElement>(null);
+  const dataRef=useRef<Data|null>(null);
   dataRef.current=data;
   const moving=useRef<Move>(null), undoStack=useRef<HistoryEntry[]>([]), redoStack=useRef<HistoryEntry[]>([]), timer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const revision=useRef(0),skipFirstSave=useRef(true),saveQueue=useRef<Promise<void>>(Promise.resolve());
@@ -108,7 +108,7 @@ export default function App(){
   const places=useMemo(()=>data?.places.filter(p=>p.boardId===data.activeBoardId)??[],[data]);
   const placeByCard=useMemo(()=>new Map(places.map(p=>[p.cardId,p])),[places]);
   const links=useMemo(()=>data?.links.filter(l=>placeByCard.has(l.from)&&placeByCard.has(l.to))??[],[data,placeByCard]);
-  const results=useMemo(()=>{const q=query.toLowerCase().trim();return (data?.cards??[]).filter(c=>!q||`${c.title} ${c.content}`.toLowerCase().includes(q)).sort((a,b)=>b.updatedAt-a.updatedAt)},[data,query]);
+  const results=useMemo(()=>{const q=query.toLowerCase().trim();return (data?.cards??[]).filter(c=>!q||`${c.title} ${documentPlainText(c.content)}`.toLowerCase().includes(q)).sort((a,b)=>b.updatedAt-a.updatedAt)},[data,query]);
   const chosenPlace=selected.length===1?data?.places.find(p=>p.id===selected[0]):undefined;
   const chosen=chosenPlace?data?.cards.find(c=>c.id===chosenPlace.cardId):undefined;
   const isVeiled=(p:Place)=>privacy&&!revealed.includes(p.id);
@@ -124,7 +124,7 @@ export default function App(){
   const removeSelected=useCallback(()=>{if(!selected.length)return;commit(d=>{d.places=d.places.filter(p=>!selected.includes(p.id))},"从白板移除");setSelected([]);setToast("已从白板移除，卡片仍在资料库")},[commit,selected]);
   const updateCard=useCallback((cid:string,patch:Partial<Card>,historyLabel="编辑卡片",mergeKey?:string)=>commit(d=>{const card=d.cards.find(c=>c.id===cid);if(card)Object.assign(card,patch,{updatedAt:Date.now()})},historyLabel,mergeKey),[commit]);
   const updatePlace=(pid:string,patch:Partial<Place>,historyLabel="调整卡片显示")=>commit(d=>{const p=d.places.find(x=>x.id===pid);if(p)Object.assign(p,patch)},historyLabel);
-  const toggleKind=(c:Card,p:Place)=>commit(d=>{const dc=d.cards.find(x=>x.id===c.id),dp=d.places.find(x=>x.id===p.id);if(!dc||!dp)return;dc.kind=dc.kind==="doc"?"block":"doc";if(dc.kind==="doc"&&!dc.title)dc.title=dc.content.split(/\r?\n/)[0]?.slice(0,40)||"无标题文档";dp.compact=dc.kind==="block";dp.w=dc.kind==="doc"?320:250;dp.h=dc.kind==="doc"?230:150;dp.view=dc.kind==="doc"?"full":"content"},"切换卡片类型");
+  const toggleKind=(c:Card,p:Place)=>commit(d=>{const dc=d.cards.find(x=>x.id===c.id),dp=d.places.find(x=>x.id===p.id);if(!dc||!dp)return;dc.kind=dc.kind==="doc"?"block":"doc";if(dc.kind==="doc"&&!dc.title)dc.title=documentPlainText(dc.content).slice(0,40)||"无标题文档";if(dc.kind==="block")dc.content=documentPlainText(dc.content);dp.compact=dc.kind==="block";dp.w=dc.kind==="doc"?320:250;dp.h=dc.kind==="doc"?230:150;dp.view=dc.kind==="doc"?"full":"content"},"切换卡片类型");
 
   const choose=(p:Place,e:ReactPointerEvent)=>{if(connect){if(!linkFrom){setLinkFrom(p.cardId);setToast("请选择第二张卡片");return}if(linkFrom===p.cardId){setLinkFrom(null);return}const exists=data!.links.some(l=>(l.from===linkFrom&&l.to===p.cardId)||(l.to===linkFrom&&l.from===p.cardId));if(!exists)commit(d=>d.links.push({id:id("link"),from:linkFrom,to:p.cardId,label:""}),"建立双向链接");setConnect(false);setLinkFrom(null);setToast(exists?"两张卡片已经有关联":"已建立双向知识链接");return}setSelected(cur=>e.shiftKey?(cur.includes(p.id)?cur.filter(x=>x!==p.id):[...cur,p.id]):[p.id])};
   const startCard=(e:ReactPointerEvent,p:Place)=>{if(connect||e.button!==0||!data)return;e.preventDefault();e.stopPropagation();const ids=selected.includes(p.id)?selected:[p.id],origins:Record<string,{x:number;y:number}>={};data.places.forEach(x=>{if(ids.includes(x.id))origins[x.id]={x:x.x,y:x.y}});if(!selected.includes(p.id))setSelected([p.id]);recordHistory(data,"移动卡片");moving.current={mode:"card",cx:e.clientX,cy:e.clientY,origins}};
@@ -138,30 +138,15 @@ export default function App(){
   const fit=()=>{if(!places.length||!canvas.current){setPan({x:0,y:0});setZoom(1);return}const b=places.reduce((a,p)=>({x1:Math.min(a.x1,p.x),y1:Math.min(a.y1,p.y),x2:Math.max(a.x2,p.x+p.w),y2:Math.max(a.y2,p.y+displayHeight(p))}),{x1:Infinity,y1:Infinity,x2:-Infinity,y2:-Infinity}),r=canvas.current.getBoundingClientRect(),z=Math.min(1,Math.max(.35,Math.min((r.width-120)/(b.x2-b.x1),(r.height-120)/(b.y2-b.y1))));setZoom(z);setPan({x:r.width/2-(b.x1+b.x2)/2*z,y:r.height/2-(b.y1+b.y2)/2*z})};
   const backup=()=>{if(!data)return;const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})),a=document.createElement("a");a.href=url;a.download=`weave-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);setToast("完整备份已导出")};
   const restore=async(e:ChangeEvent<HTMLInputElement>)=>{const f=e.target.files?.[0];e.target.value="";if(!f)return;try{const v=JSON.parse(await f.text());if(!valid(v))throw 0;if(!v.boards.some((b:Board)=>b.id===v.activeBoardId))v.activeBoardId=v.boards[0]?.id??"";if(data)recordHistory(data,"恢复备份");dataRef.current=v;setData(v);setSelected([]);setToast("备份恢复成功")}catch{setToast("备份文件格式不正确")}};
-  const insertImage=useCallback(async(cid:string,file:File)=>{
-    try{
-      setToast("正在上传图片…");
-      const asset=await uploadImage(file);
-      commit(d=>{const card=d.cards.find(c=>c.id===cid);if(!card)return;const prefix=card.content.trimEnd();card.content=`${prefix}${prefix?"\n\n":""}![${asset.name}](${asset.url})\n`;card.updatedAt=Date.now()},"插入图片");
-      setToast("图片已插入文档");
-    }catch(error){setToast(error instanceof Error?error.message:"图片上传失败")}
-  },[commit]);
-  const requestImage=(cid:string)=>{imageTarget.current=cid;imageInput.current?.click()};
-  const pickImage=(e:ChangeEvent<HTMLInputElement>)=>{const file=e.target.files?.[0],cid=imageTarget.current;e.target.value="";if(file&&cid)void insertImage(cid,file)};
-  const pasteImage=(cid:string,e:ReactClipboardEvent<HTMLTextAreaElement>)=>{const file=Array.from(e.clipboardData.files).find(item=>item.type.startsWith("image/"));if(file){e.preventDefault();void insertImage(cid,file)}};
-  const dropImage=(cid:string,e:DragEvent<HTMLTextAreaElement>)=>{const file=Array.from(e.dataTransfer.files).find(item=>item.type.startsWith("image/"));if(file){e.preventDefault();void insertImage(cid,file)}};
   const deleteCard=(cid:string)=>{const c=data?.cards.find(x=>x.id===cid);if(!c||!confirm(`确定彻底删除「${privacy?privacyLabel(c):label(c)}」？`))return;commit(d=>{d.cards=d.cards.filter(x=>x.id!==cid);d.places=d.places.filter(x=>x.cardId!==cid);d.links=d.links.filter(x=>x.from!==cid&&x.to!==cid)},"彻底删除卡片");setSelected([])};
   const togglePrivacy=()=>setPrivacy(current=>{const next=!current;setRevealed([]);if(next){setFull(null);setSelected([])}setToast(next?"隐私模式：正文已隐藏":"已显示全部内容");return next});
 
   if(!data)return <main className="loading"><b>W</b><span>{status==="error"?"无法连接 Weave 服务器":"正在从服务器加载知识库…"}</span></main>;
   const fullCard=data.cards.find(c=>c.id===full);
-  const fullMode:DocMode=fullCard?(fullCard.docMode??"edit"):"edit";
-  const fullStyle:MindMapStyle=fullCard?.mindMapStyle??"rainbow";
   const chosenView:CardView=chosenPlace?cardView(chosenPlace):"full";
   const undoEntries=[...undoStack.current].reverse();
   const redoEntries=[...redoStack.current].reverse();
   return <main className={`app ${privacy?"privacy-mode":""}`}>
-    <input ref={imageInput} hidden type="file" accept="image/jpeg,image/png,image/gif,image/webp" onChange={pickImage}/>
     <aside className={`left ${leftOpen?"":"closed"}`}>
       <header className="brand"><b>W</b><div><strong>Weave</strong><small>自托管视觉知识库</small></div><button onClick={()=>setLeftOpen(false)}>‹</button></header>
       <div className="left-body">
@@ -184,17 +169,14 @@ export default function App(){
             const c=data.cards.find(x=>x.id===p.cardId);
             if(!c)return null;
             const isSelected=selected.includes(p.id),source=linkFrom===c.id,related=linked(c.id),hidden=isVeiled(p);
-            const mode:DocMode=c.docMode??"edit",viewMode=cardView(p),mapStyle:MindMapStyle=c.mindMapStyle??"rainbow";
+            const viewMode=cardView(p);
             return <article key={p.id} className={`card ${c.kind} ${c.color} view-${viewMode} ${isSelected?"selected":""} ${source?"source":""} ${hidden?"veiled":""}`} style={{left:p.x,top:p.y,width:p.w,height:hidden?privacyHeight:viewMode==="title"?titleHeight:p.h}} onPointerDown={e=>choose(p,e)}>
               {hidden?<button className="privacy-cover" onPointerDown={e=>e.stopPropagation()} onClick={()=>setRevealed(current=>[...current,p.id])} aria-label={`查看${privacyLabel(c)}的内容`}><strong>{privacyLabel(c)}</strong><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/></svg></button>:<>
                 <header onPointerDown={e=>startCard(e,p)}>
                   <span>⠿</span><small>{c.kind.toUpperCase()}</small>
                   <nav>
                     {related.length>0&&<em>⌁ {related.length}</em>}
-                    {c.kind==="doc"&&<DocModeButton value={mode} onChange={next=>updateCard(c.id,{docMode:next},"切换文档模式")}/>}
                     <CardViewButton value={viewMode} onChange={next=>updatePlace(p.id,{view:next,compact:next==="content"},"切换卡片显示")}/>
-                    {c.kind==="doc"&&mode==="mindmap"&&<MindStyleButton value={mapStyle} onChange={next=>updateCard(c.id,{mindMapStyle:next},"切换导图样式")}/>}
-                    {c.kind==="doc"&&<button className="image-insert" title="插入图片" aria-label="插入图片" onPointerDown={e=>e.stopPropagation()} onClick={()=>requestImage(c.id)}>▧</button>}
                     {c.kind==="doc"&&<button title="全屏打开" aria-label="全屏打开" onPointerDown={e=>e.stopPropagation()} onClick={()=>setFull(c.id)}>↗</button>}
                     <button title="从白板移除" aria-label="从白板移除" onPointerDown={e=>e.stopPropagation()} onClick={()=>{commit(d=>{d.places=d.places.filter(x=>x.id!==p.id)},"从白板移除");setSelected([]);setToast("已移除，资料库中仍保留")}}>×</button>
                   </nav>
@@ -203,11 +185,9 @@ export default function App(){
                   ?<div className="card-title-only">{c.kind==="doc"?privacyLabel(c):label(c)}</div>
                   :<>
                     {c.kind==="doc"&&viewMode==="full"&&<input className="card-title" value={c.title} onPointerDown={e=>e.stopPropagation()} onChange={e=>updateCard(c.id,{title:e.target.value},"编辑文档标题",`card:${c.id}:title`)} placeholder="无标题文档"/>}
-                    {c.kind==="doc"&&mode==="preview"
-                      ?<MarkdownView content={c.content}/>
-                      :c.kind==="doc"&&mode==="mindmap"
-                        ?<MindMap title={c.title} content={c.content} style={mapStyle} onChange={next=>updateCard(c.id,{content:next},"编辑导图")} onTitleChange={next=>updateCard(c.id,{title:next},"重命名中心主题")}/>
-                        :<textarea className={viewMode==="content"?"compact-text":"card-text"} value={c.content} onPointerDown={e=>e.stopPropagation()} onChange={e=>updateCard(c.id,{content:e.target.value},c.kind==="doc"?"编辑文档正文":"编辑 Block",`card:${c.id}:content`)} onPaste={c.kind==="doc"?e=>pasteImage(c.id,e):undefined} onDragOver={c.kind==="doc"?e=>{if(Array.from(e.dataTransfer.types).includes("Files"))e.preventDefault()}:undefined} onDrop={c.kind==="doc"?e=>dropImage(c.id,e):undefined} placeholder={c.kind==="doc"?"# 一级标题\n## 二级标题\n### 三级标题\n\n开始写作…":"写下一个想法…"}/>}
+                    {c.kind==="doc"
+                      ?<RichDocumentEditor content={c.content} onChange={(content,historyLabel)=>updateCard(c.id,{content},historyLabel,`card:${c.id}:content`)} onImageUpload={uploadImage} onUploadMessage={setToast}/>
+                      :<textarea className={viewMode==="content"?"compact-text":"card-text"} value={c.content} onPointerDown={e=>e.stopPropagation()} onChange={e=>updateCard(c.id,{content:e.target.value},"编辑 Block",`card:${c.id}:content`)} placeholder="写下一个想法…"/>}
                     <i className="resize" onPointerDown={e=>startResize(e,p)}/>
                   </>}
               </>}
@@ -222,21 +202,12 @@ export default function App(){
     {fullCard&&<div className="modal" onPointerDown={e=>{if(e.target===e.currentTarget)setFull(null)}}>
       <div className={`full-editor ${fullCard.color}`}>
         <header>
-          <span>DOC · 服务器自动保存</span>
-          <div className="full-status">
-            <DocModeButton value={fullMode} onChange={next=>updateCard(fullCard.id,{docMode:next},"切换文档模式")}/>
-            {fullMode==="mindmap"&&<MindStyleButton value={fullStyle} onChange={next=>updateCard(fullCard.id,{mindMapStyle:next},"切换导图样式")}/>}
-            <button className="editor-image" title="插入图片" onClick={()=>requestImage(fullCard.id)}>▧ 插入图片</button>
-          </div>
+          <span>DOC · 所见即所得 · 服务器自动保存</span>
           <button className="editor-done" onClick={()=>setFull(null)}>完成</button>
         </header>
         <input value={fullCard.title} onChange={e=>updateCard(fullCard.id,{title:e.target.value},"编辑文档标题",`card:${fullCard.id}:title`)} autoFocus/>
-        {fullMode==="edit"
-          ?<textarea value={fullCard.content} onChange={e=>updateCard(fullCard.id,{content:e.target.value},"编辑文档正文",`card:${fullCard.id}:content`)} onPaste={e=>pasteImage(fullCard.id,e)} onDragOver={e=>{if(Array.from(e.dataTransfer.types).includes("Files"))e.preventDefault()}} onDrop={e=>dropImage(fullCard.id,e)} placeholder="# 一级标题\n## 二级标题\n### 三级标题\n\n开始写作…"/>
-          :fullMode==="preview"
-            ?<MarkdownView content={fullCard.content} full/>
-            :<MindMap title={fullCard.title} content={fullCard.content} full style={fullStyle} onChange={next=>updateCard(fullCard.id,{content:next},"编辑导图")} onTitleChange={next=>updateCard(fullCard.id,{title:next},"重命名中心主题")}/>}
-        <footer><span>{fullCard.content.trim().length} 字符</span><span>双击导图节点可重命名 · 选中后可增删</span></footer>
+        <RichDocumentEditor full content={fullCard.content} onChange={(content,historyLabel)=>updateCard(fullCard.id,{content},historyLabel,`card:${fullCard.id}:content`)} onImageUpload={uploadImage} onUploadMessage={setToast}/>
+        <footer><span>{documentPlainText(fullCard.content).length} 字符</span><span>直接排版 · 粘贴图片 · 插入思维导图</span></footer>
       </div>
     </div>}
     {toast&&<div className="toast">{toast}</div>}

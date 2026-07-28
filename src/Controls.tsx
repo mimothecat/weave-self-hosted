@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { DocMode, MindMapStyle } from "./Markdown";
+import type { MindMapStyle } from "./Markdown";
 
 export type CardView = "title" | "content" | "full";
 
@@ -50,12 +50,6 @@ function SelectButton<T extends string>({ ariaLabel, choices, onChange, value }:
   </div>;
 }
 
-const docModeChoices: Choice<DocMode>[] = [
-  { id: "edit", icon: "✎", label: "编辑", description: "直接修改 Markdown 正文" },
-  { id: "preview", icon: "◫", label: "预览", description: "阅读排版后的文档" },
-  { id: "mindmap", icon: "⌘", label: "导图", description: "以层级节点查看和编辑" },
-];
-
 const cardViewChoices: Choice<CardView>[] = [
   { id: "full", icon: "▣", label: "完整模式", description: "同时显示标题和内容" },
   { id: "title", icon: "▔", label: "纯标题模式", description: "收起卡片，只保留标题" },
@@ -69,8 +63,6 @@ const mindStyleChoices: Choice<MindMapStyle>[] = [
   { id: "org", icon: "⌂", label: "组织结构", description: "从上到下呈现层级关系" },
 ];
 
-export const DocModeButton = (props: { value: DocMode; onChange: (value: DocMode) => void }) =>
-  <SelectButton ariaLabel="文档模式" choices={docModeChoices} {...props} />;
 
 export const CardViewButton = (props: { value: CardView; onChange: (value: CardView) => void }) =>
   <SelectButton ariaLabel="卡片显示" choices={cardViewChoices} {...props} />;

@@ -1,90 +1,6 @@
-import { Fragment, type CSSProperties, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
-
-export type DocMode = "edit" | "preview" | "mindmap";
+import { type CSSProperties, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 export type MindMapStyle = "rainbow" | "balanced" | "minimal" | "org";
-
-function inlineMarkdown(text: string): ReactNode[] {
-  return text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g).filter(Boolean).map((part, index) => {
-    if (part.startsWith("**") && part.endsWith("**")) return <strong key={index}>{part.slice(2, -2)}</strong>;
-    if (part.startsWith("`") && part.endsWith("`")) return <code key={index}>{part.slice(1, -1)}</code>;
-    if (part.startsWith("*") && part.endsWith("*")) return <em key={index}>{part.slice(1, -1)}</em>;
-    return <Fragment key={index}>{part}</Fragment>;
-  });
-}
-
-type MarkdownBlock =
-  | { type: "heading"; level: number; text: string }
-  | { type: "paragraph" | "quote"; text: string }
-  | { type: "ul" | "ol"; items: string[] }
-  | { type: "image"; alt: string; src: string }
-  | { type: "hr" };
-
-function parseMarkdown(content: string): MarkdownBlock[] {
-  const lines = content.replace(/\r/g, "").split("\n");
-  const blocks: MarkdownBlock[] = [];
-  for (let index = 0; index < lines.length;) {
-    const line = lines[index];
-    if (!line.trim()) { index += 1; continue; }
-    const heading = line.match(/^(#{1,6})\s+(.+)$/);
-    if (heading) { blocks.push({ type: "heading", level: heading[1].length, text: heading[2].trim() }); index += 1; continue; }
-    const image = line.match(/^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$/);
-    if (image) { blocks.push({ type: "image", alt: image[1].trim(), src: image[2].trim() }); index += 1; continue; }
-    if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) { blocks.push({ type: "hr" }); index += 1; continue; }
-    if (/^\s*>\s?/.test(line)) {
-      const text: string[] = [];
-      while (index < lines.length && /^\s*>\s?/.test(lines[index])) text.push(lines[index++].replace(/^\s*>\s?/, ""));
-      blocks.push({ type: "quote", text: text.join(" ") });
-      continue;
-    }
-    if (/^\s*[-*+]\s+/.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length) {
-        const match = lines[index].match(/^\s*[-*+]\s+(.+)$/);
-        if (!match) break;
-        items.push(match[1]);
-        index += 1;
-      }
-      blocks.push({ type: "ul", items });
-      continue;
-    }
-    if (/^\s*\d+[.)]\s+/.test(line)) {
-      const items: string[] = [];
-      while (index < lines.length) {
-        const match = lines[index].match(/^\s*\d+[.)]\s+(.+)$/);
-        if (!match) break;
-        items.push(match[1]);
-        index += 1;
-      }
-      blocks.push({ type: "ol", items });
-      continue;
-    }
-    const paragraph: string[] = [line.trim()];
-    index += 1;
-    while (index < lines.length && lines[index].trim() && !/^(#{1,6})\s+|^\s*(?:[-*+]\s+|\d+[.)]\s+|>\s?|---+\s*$)/.test(lines[index])) paragraph.push(lines[index++].trim());
-    blocks.push({ type: "paragraph", text: paragraph.join(" ") });
-  }
-  return blocks;
-}
-
-export function MarkdownView({ content, full = false }: { content: string; full?: boolean }) {
-  const blocks = parseMarkdown(content);
-  return <div className={"doc-surface markdown-view " + (full ? "full" : "")} onWheel={event => event.stopPropagation()}>
-    {!blocks.length && <div className="markdown-empty"><strong>还没有正文</strong><span>在编辑模式输入 #、##、### 创建分级标题。</span></div>}
-    {blocks.map((block, index) => {
-      if (block.type === "heading") return <div key={index} className={"md-heading md-h" + block.level} role="heading" aria-level={block.level}>{inlineMarkdown(block.text)}</div>;
-      if (block.type === "paragraph") return <p key={index}>{inlineMarkdown(block.text)}</p>;
-      if (block.type === "quote") return <blockquote key={index}>{inlineMarkdown(block.text)}</blockquote>;
-      if (block.type === "hr") return <hr key={index} />;
-      if (block.type === "image") return <figure key={index}><img src={block.src} alt={block.alt} loading="lazy" />{block.alt && <figcaption>{block.alt}</figcaption>}</figure>;
-      if (block.type === "ul" || block.type === "ol") {
-        const List = block.type === "ol" ? "ol" : "ul";
-        return <List key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{inlineMarkdown(item)}</li>)}</List>;
-      }
-      return null;
-    })}
-  </div>;
-}
 
 type MindNode = {
   children: MindNode[];
@@ -392,6 +308,7 @@ export function MindMap({ title, content, full = false, style = "rainbow", onCha
       setScale(Math.max(.64, Math.min(1, availableWidth / layout.width)));
     };
     fit();
+    if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(fit);
     observer.observe(viewport);
     return () => observer.disconnect();
@@ -456,7 +373,7 @@ export function MindMap({ title, content, full = false, style = "rainbow", onCha
             {selectedNode.id !== "root" && <button type="button" title="新增同级节点" onPointerDown={event => event.stopPropagation()} onClick={() => onChange?.(addMindNode(content, root, selectedNode, "sibling"))}>＋同</button>}
             {selectedNode.id !== "root" && <button type="button" className="danger" title="删除节点及其子节点" onPointerDown={event => event.stopPropagation()} onClick={() => { onChange?.(deleteMindNode(content, root, selectedNode)); setSelectedId(null); }}>×</button>}
           </div>}
-          {!root.children.length && <div className="mindmap-empty" style={{ left: layout.nodes[0].x, top: layout.nodes[0].y + layout.nodes[0].height + 14 }}>点击中心主题后选择“＋子”，或在编辑模式输入 #、##、###。</div>}
+          {!root.children.length && <div className="mindmap-empty" style={{ left: layout.nodes[0].x, top: layout.nodes[0].y + layout.nodes[0].height + 14 }}>点击中心主题后选择“＋子”，继续添加分支。</div>}
         </div>
       </div>
     </div>
