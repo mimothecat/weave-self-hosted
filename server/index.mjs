@@ -129,7 +129,8 @@ if (existsSync(clientDirectory)) {
     const requestPath = request.url.split("?")[0];
     if (
       currentClientScript &&
-      /^\/assets\/index-[^/]+\.js$/.test(requestPath)
+      requestPath !== currentClientScript &&
+      /^\/(?:assets|static)\/index-[^/]+\.js$/.test(requestPath)
     ) {
       return reply
         .header("Cache-Control", "no-store")
@@ -137,7 +138,8 @@ if (existsSync(clientDirectory)) {
     }
     if (
       currentClientStylesheet &&
-      /^\/assets\/index-[^/]+\.css$/.test(requestPath)
+      requestPath !== currentClientStylesheet &&
+      /^\/(?:assets|static)\/index-[^/]+\.css$/.test(requestPath)
     ) {
       return reply
         .header("Cache-Control", "no-store")

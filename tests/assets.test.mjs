@@ -47,8 +47,13 @@ test("image assets are stored outside the workspace database and served back", a
   assert.equal(staleScript.status, 302);
   assert.match(
     staleScript.headers.get("location"),
-    /^\/assets\/index-[^/]+\.js$/,
+    /^\/static\/index-[^/]+\.js$/,
   );
+  const currentScript = await fetch(
+    `${baseUrl}${staleScript.headers.get("location")}`,
+  );
+  assert.equal(currentScript.status, 200);
+  assert.match(currentScript.headers.get("content-type"), /javascript/);
 
   const staleStylesheet = await fetch(`${baseUrl}/assets/index-stale.css`, {
     redirect: "manual",
@@ -56,8 +61,13 @@ test("image assets are stored outside the workspace database and served back", a
   assert.equal(staleStylesheet.status, 302);
   assert.match(
     staleStylesheet.headers.get("location"),
-    /^\/assets\/index-[^/]+\.css$/,
+    /^\/static\/index-[^/]+\.css$/,
   );
+  const currentStylesheet = await fetch(
+    `${baseUrl}${staleStylesheet.headers.get("location")}`,
+  );
+  assert.equal(currentStylesheet.status, 200);
+  assert.match(currentStylesheet.headers.get("content-type"), /text\/css/);
 
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
   const upload = await fetch(`${baseUrl}/api/assets`, {
